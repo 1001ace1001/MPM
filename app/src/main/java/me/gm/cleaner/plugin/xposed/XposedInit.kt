@@ -20,6 +20,7 @@ import io.github.libxposed.api.XposedInterface.HookHandle
 import io.github.libxposed.api.XposedInterface.Hooker
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
+import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import me.gm.cleaner.plugin.util.L
 import me.gm.cleaner.plugin.xposed.hooker.DeleteHooker
@@ -27,6 +28,8 @@ import me.gm.cleaner.plugin.xposed.hooker.FileHooker
 import me.gm.cleaner.plugin.xposed.hooker.InsertHooker
 import me.gm.cleaner.plugin.xposed.hooker.MediaTables
 import me.gm.cleaner.plugin.xposed.hooker.QueryHooker
+import me.gm.cleaner.plugin.xposed.hooker.XLConfigHooker
+import me.gm.cleaner.plugin.xposed.hooker.XLCreateFileHooker
 import me.gm.cleaner.plugin.xposed.util.Reflection
 import java.io.File
 import java.lang.reflect.Method
@@ -37,6 +40,7 @@ class XposedInit : XposedModule() {
     private val attachHookInstalled = AtomicBoolean(false)
     private val mediaProviderInitialized = AtomicBoolean(false)
     private val downloadProviderInitialized = AtomicBoolean(false)
+    private val xlDownloadHooksInstalled = AtomicBoolean(false)
 
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         L.frameworkLogger = { priority, message, throwable ->
@@ -45,10 +49,67 @@ class XposedInit : XposedModule() {
         log(Log.INFO, "MPM", "API $apiVersion loaded in ${param.processName}")
     }
 
+    /**
+     * The Xunlei engine's `.xlDownload` folder is created during the download manager's
+     * Application.onCreate (XLConfig.initLog -> setDebug -> FileUtil.createFile), before
+     * any provider is attached; the mkdir/mkdirs hooks from initializeDownloadProvider()
+     * install too late and cannot observe native writes either. Hook the funnel methods
+     * here, at load time and in every process of the package.
+     */
+    override fun onPackageLoaded(param: PackageLoadedParam) {
+        if (param.packageName != "com.android.providers.downloads") return
+        installXlDownloadHooks(param.defaultClassLoader)
+    }
+
+    private fun installXlDownloadHooks(loader: ClassLoader?) {
+        if (!xlDownloadHooksInstalled.compareAndSet(false, true)) return
+        val handles = mutableListOf<HookHandle>()
+        try {
+            val xlConfig = Reflection.findClass(
+                "com.android.providers.downloads.config.XLConfig", loader
+            )
+            for (method in xlConfig.declaredMethods) {
+                if (method.name == "setDebug" || method.name == "setSoDebug") {
+                    handles += hook(method).setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .intercept(XLConfigHooker())
+                }
+            }
+            val fileUtil = Reflection.findClass(
+                "com.android.providers.downloads.util.FileUtil", loader
+            )
+            for (method in fileUtil.declaredMethods) {
+                if (method.name == "createFile" &&
+                    method.parameterTypes.size == 1 &&
+                    method.parameterTypes[0] == String::class.java
+                ) {
+                    // The hooker throws the IOException createFile already declares;
+                    // PROTECTIVE would swallow it and fall back to the original method.
+                    handles += hook(method).setExceptionMode(ExceptionMode.PASSTHROUGH)
+                        .intercept(XLCreateFileHooker())
+                }
+            }
+            if (handles.isEmpty()) {
+                throw NoSuchMethodException(
+                    "no XLConfig.setDebug/setSoDebug or FileUtil.createFile(String) found"
+                )
+            }
+            log(Log.INFO, "MPM", "${handles.size} .xlDownload prevention hooks ready")
+        } catch (t: Throwable) {
+            handles.forEach { runCatching { it.unhook() } }
+            xlDownloadHooksInstalled.set(false)
+            L.e("XL download hook initialization failed; .xlDownload will be created as before", t)
+        }
+    }
+
     override fun onPackageReady(param: PackageReadyParam) {
         if (param.packageName !in MediaTables.SYSTEM_CALLING_PACKAGES &&
             param.packageName != "com.android.providers.downloads"
         ) return
+        if (param.packageName == "com.android.providers.downloads") {
+            // Fallback for frameworks that only report readiness; normally installed
+            // in onPackageLoaded, before Application.onCreate creates the folder.
+            installXlDownloadHooks(param.classLoader)
+        }
         if (!attachHookInstalled.compareAndSet(false, true)) return
         try {
             val method = ContentProvider::class.java.getDeclaredMethod(

@@ -1,5 +1,11 @@
 # 更新日志 / Changelog
 
+## 1.0.1 — 未发布 / Unreleased
+
+- 阻止小米下载管理程序（Android 14–17）在存储根目录创建 `.xlDownload` 文件夹：在 `onPackageLoaded` 时机跳过 `XLConfig.setDebug/setSoDebug`，并让 `FileUtil.createFile` 对 `.xlDownload` 路径抛出其已声明的 `IOException`；启动期的创建发生在 `Application.onCreate`，早于原有下载目录 Hook 的安装时机，且原生引擎写入无法被目录 Hook 观测，因此改为拦截创建链路本身（同 HyperCeiler 的 RemoveXlDownload 规则）。
+
+Block the Xiaomi download manager's Xunlei engine from creating the storage-root `.xlDownload` folder (Android 14–17 builds verified). `XLConfig.setDebug/setSoDebug` are skipped at `onPackageLoaded` time — startup creation happens inside `Application.onCreate`, before the existing download-directory hooks install, and native engine writes are invisible to them — and `FileUtil.createFile` now throws its declared `IOException` for `.xlDownload` paths. Equivalent to HyperCeiler's RemoveXlDownload rule.
+
 ## 1.1.0-dev — 未发布 / Unreleased
 
 - 迁移到现代 libxposed API 102.0.0，最低与目标 Xposed API 均为 102；需要支持 API 102 的框架。

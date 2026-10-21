@@ -31,6 +31,7 @@ As with native storage, Android does not offer a fine-grained management scheme 
 - Prevent apps from freewheelingly writing files via the media store.
 - Provide a usage record feature to help you be aware of how applications use the media store.
 - Prevent 💩 ROM's download manager from creating non-standard files.
+- Block the download manager's Xunlei engine from creating the storage-root `.xlDownload` folder (Android 14–17 builds verified).
 - Material 3.
 - Open source.
 
